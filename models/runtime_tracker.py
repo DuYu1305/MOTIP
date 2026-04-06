@@ -12,6 +12,7 @@ from utils.misc import distributed_device
 from utils.box_ops import box_cxcywh_to_xywh
 from models.misc import get_model
 from utils.nested_tensor import NestedTensor
+from utils.input_padder import InputPadder
 
 
 class RuntimeTracker:
@@ -186,14 +187,17 @@ class RuntimeTracker:
                         f"Current frame shape {tuple(raw_image.shape[-2:])} does not match "
                         f"previous frame shape {tuple(self.prev_image.shape[-2:])}."
                     )
+                padder = InputPadder(raw_image.shape, padding_factor=8)
+                prev_image, curr_image = padder.pad(self.prev_image.float(), raw_image.float())
                 flow_out = self.gmflow(
-                    self.prev_image.float(),
-                    raw_image.float(),
+                    prev_image,
+                    curr_image,
                     attn_splits_list=[2],
                     corr_radius_list=[-1],
                     prop_radius_list=[-1],
                 )
-                flow_rgb = flow_to_image(flow_out["flow_preds"][-1])
+                flow = padder.unpad(flow_out["flow_preds"][-1])
+                flow_rgb = flow_to_image(flow)
 
             flow_rgb = v2.functional.to_dtype(flow_rgb, dtype=torch.float32, scale=True)
             flow_rgb = v2.functional.normalize(

@@ -26,6 +26,7 @@ from log.log import TPS, Metrics
 from models.misc import load_detr_pretrain, save_checkpoint, load_checkpoint
 from models.misc import get_model
 from utils.nested_tensor import NestedTensor
+from utils.input_padder import InputPadder
 from submit_and_evaluate import submit_and_evaluate_one_model
 from gmflow.gmflow import GMFlow
 from torchvision.utils import flow_to_image
@@ -329,6 +330,8 @@ def train_one_epoch(
         if num_frames > 1:
             frame0_batch = gmflow_images[:, :-1].flatten(0, 1).contiguous()
             frame1_batch = gmflow_images[:, 1:].flatten(0, 1).contiguous()
+            padder = InputPadder(frame0_batch.shape, padding_factor=8)
+            frame0_batch, frame1_batch = padder.pad(frame0_batch, frame1_batch)
 
             flow_chunks = []
             chunk = 4
@@ -347,6 +350,7 @@ def train_one_epoch(
                     flow_chunks.append(out["flow_preds"][-1])
 
             flow_batch = torch.cat(flow_chunks, dim=0)
+            flow_batch = padder.unpad(flow_batch)
             flow_rgb = flow_to_image(flow_batch).view(batch_size, num_frames - 1, 3, H_pad, W_pad)
             flow_rgb = torch.cat(
                 [flow_rgb.new_zeros(batch_size, 1, 3, H_pad, W_pad), flow_rgb],

@@ -1,5 +1,6 @@
 # Copyright (c) Ruopeng Gao. All Rights Reserved.
 
+import torch
 import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 
