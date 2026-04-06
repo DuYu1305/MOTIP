@@ -162,7 +162,13 @@ def load_checkpoint(model, path, states=None, optimizer=None, scheduler=None):
         load_detr_pretrain(model=model, pretrain_path=path, num_classes=None)
         return
     else:
-        model.load_state_dict(model_state)
+        missing_keys, unexpected_keys = model.load_state_dict(model_state, strict=False)
+        allowed_missing = {"flow_rgb_adapter.weight"}
+        unexpected_allowed = set()
+        if set(missing_keys) - allowed_missing:
+            raise RuntimeError(f"Unexpected missing keys when loading checkpoint: {missing_keys}")
+        if set(unexpected_keys) - unexpected_allowed:
+            raise RuntimeError(f"Unexpected keys when loading checkpoint: {unexpected_keys}")
 
     if optimizer is not None:
         optimizer.load_state_dict(load_state["optimizer"])

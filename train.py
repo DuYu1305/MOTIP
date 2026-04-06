@@ -145,7 +145,7 @@ def train_engine(config: dict):
             path=config["RESUME_MODEL"],
             optimizer=optimizer if config["RESUME_OPTIMIZER"] else None,
             scheduler=scheduler if config["RESUME_SCHEDULER"] else None,
-            states=train_states,
+            states=train_states if config.get("RESUME_STATES", True) else None,
         )
         # Different processing on scheduler:
         if config["RESUME_SCHEDULER"]:
