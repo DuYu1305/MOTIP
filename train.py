@@ -330,7 +330,9 @@ def train_one_epoch(
         if num_frames > 1:
             frame0_batch = gmflow_images[:, :-1].flatten(0, 1).contiguous()
             frame1_batch = gmflow_images[:, 1:].flatten(0, 1).contiguous()
-            padder = InputPadder(frame0_batch.shape, padding_factor=8)
+            # GMFlow uses 1/8-resolution features here; with attn_splits=2, the input
+            # size needs to be divisible by 16 so the split windows remain valid.
+            padder = InputPadder(frame0_batch.shape, padding_factor=16)
             frame0_batch, frame1_batch = padder.pad(frame0_batch, frame1_batch)
 
             flow_chunks = []

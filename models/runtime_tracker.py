@@ -187,7 +187,8 @@ class RuntimeTracker:
                         f"Current frame shape {tuple(raw_image.shape[-2:])} does not match "
                         f"previous frame shape {tuple(self.prev_image.shape[-2:])}."
                     )
-                padder = InputPadder(raw_image.shape, padding_factor=8)
+                # Match the training-time GMFlow padding requirement.
+                padder = InputPadder(raw_image.shape, padding_factor=16)
                 prev_image, curr_image = padder.pad(self.prev_image.float(), raw_image.float())
                 flow_out = self.gmflow(
                     prev_image,
