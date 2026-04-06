@@ -27,6 +27,8 @@ from models.misc import load_detr_pretrain, save_checkpoint, load_checkpoint
 from models.misc import get_model
 from utils.nested_tensor import NestedTensor
 from submit_and_evaluate import submit_and_evaluate_one_model
+from gmflow.gmflow import GMFlow
+from torchvision.utils import flow_to_image
 
 
 def train_engine(config: dict):
@@ -125,6 +127,14 @@ def train_engine(config: dict):
         gamma=config["SCHEDULER_GAMMA"],
     )
 
+    gmflow = GMFlow()
+    checkpoint = torch.load("./gmflow/gmflow_things-e9887eda.pth", map_location="cpu")
+    weights = checkpoint["model"] if isinstance(checkpoint, dict) and "model" in checkpoint else checkpoint
+    gmflow.load_state_dict(weights)
+    gmflow.eval()
+    gmflow.requires_grad_(False)
+    gmflow.to(accelerator.device)
+
     # Other infos:
     only_detr = config["ONLY_DETR"]
 
@@ -172,6 +182,7 @@ def train_engine(config: dict):
             detr_criterion=detr_criterion,
             id_criterion=id_criterion,
             optimizer=optimizer,
+            gmflow=gmflow,
             only_detr=only_detr,
             lr_warmup_epochs=config["LR_WARMUP_EPOCHS"],
             lr_warmup_tgt_lr=config["LR"],
@@ -268,6 +279,7 @@ def train_one_epoch(
         detr_criterion,
         id_criterion,
         optimizer,
+        gmflow,
         only_detr,
         lr_warmup_epochs: int,
         lr_warmup_tgt_lr: float,
@@ -308,12 +320,49 @@ def train_one_epoch(
 
     for step, samples in enumerate(dataloader):
         images, annotations, metas = samples["images"], samples["annotations"], samples["metas"]
-        # Normalize the images:
-        # (Normally, it should be done in the dataloader, but here we do it in the training loop (on cuda).)
+
+        # GMFlow expects images in [0, 255], so keep the original range here.
+        raw_images = images.tensors
+        gmflow_images = raw_images.float()
+        batch_size, num_frames, _, H_pad, W_pad = raw_images.shape
+
+        if num_frames > 1:
+            frame0_batch = gmflow_images[:, :-1].flatten(0, 1).contiguous()
+            frame1_batch = gmflow_images[:, 1:].flatten(0, 1).contiguous()
+
+            flow_chunks = []
+            chunk = 4
+            with torch.inference_mode():
+                for s in range(0, frame0_batch.shape[0], chunk):
+                    prev = frame0_batch[s:s + chunk]
+                    cur = frame1_batch[s:s + chunk]
+
+                    out = gmflow(
+                        prev,
+                        cur,
+                        attn_splits_list=[2],
+                        corr_radius_list=[-1],
+                        prop_radius_list=[-1],
+                    )
+                    flow_chunks.append(out["flow_preds"][-1])
+
+            flow_batch = torch.cat(flow_chunks, dim=0)
+            flow_rgb = flow_to_image(flow_batch).view(batch_size, num_frames - 1, 3, H_pad, W_pad)
+            flow_rgb = torch.cat(
+                [flow_rgb.new_zeros(batch_size, 1, 3, H_pad, W_pad), flow_rgb],
+                dim=1,
+            )
+        else:
+            flow_rgb = raw_images.new_zeros(batch_size, num_frames, 3, H_pad, W_pad)
+
+        # Normalize the images.
         mean = [0.485, 0.456, 0.406]
         std = [0.229, 0.224, 0.225]
-        images.tensors = v2.functional.to_dtype(images.tensors, dtype=torch.float32, scale=True)
-        images.tensors = v2.functional.normalize(images.tensors, mean=mean, std=std)
+        image_rgb = v2.functional.to_dtype(raw_images, dtype=torch.float32, scale=True)
+        image_rgb = v2.functional.normalize(image_rgb, mean=mean, std=std)
+        flow_rgb = v2.functional.to_dtype(flow_rgb, dtype=torch.float32, scale=True)
+        flow_rgb = v2.functional.normalize(flow_rgb, mean=mean, std=std)
+        images.tensors = torch.cat([image_rgb, flow_rgb], dim=2)
         # A hack implementation to recover 0.0 in the masked regions:
         images.tensors = images.tensors * (~images.mask[:, :, None, ...]).to(torch.float32)
         images.tensors = images.tensors.contiguous()
@@ -419,6 +468,7 @@ def train_one_epoch(
                 detr_outputs=detr_outputs, annotations=annotations, detr_indices=detr_indices,
             )
             seq_info = model(seq_info=seq_info, part="trajectory_modeling")
+            seq_info["trajectory_flow"] = flow_rgb
             id_logits, id_gts, id_masks = model(
                 seq_info=seq_info,
                 part="id_decoder",

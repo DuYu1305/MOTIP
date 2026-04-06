@@ -3,12 +3,15 @@
 import torch
 import einops
 from scipy.optimize import linear_sum_assignment
+from torchvision.transforms import v2
+from torchvision.utils import flow_to_image
 
 from structures.instances import Instances
 from structures.ordered_set import OrderedSet
 from utils.misc import distributed_device
 from utils.box_ops import box_cxcywh_to_xywh
 from models.misc import get_model
+from utils.nested_tensor import NestedTensor
 
 
 class RuntimeTracker:
@@ -27,9 +30,11 @@ class RuntimeTracker:
             area_thresh: int = 0,
             only_detr: bool = False,
             dtype: torch.dtype = torch.float32,
+            gmflow=None,
     ):
         self.model = model
         self.model.eval()
+        self.gmflow = gmflow
 
         self.dtype = dtype
 
@@ -86,10 +91,12 @@ class RuntimeTracker:
         # self.trajectory_features = torch.zeros(())
 
         self.current_track_results = {}
+        self.prev_image = None
         return
 
     @torch.no_grad()
     def update(self, image):
+        image = self._prepare_detr_input(image)
         detr_out = self.model(frames=image, part="detr")
         scores, categories, boxes, output_embeds = self._get_activate_detections(detr_out=detr_out)
         if self.only_detr:
@@ -158,6 +165,54 @@ class RuntimeTracker:
         self._filter_out_inactive_tracks()
         pass
         return
+
+    def _prepare_detr_input(self, image: NestedTensor) -> NestedTensor:
+        raw_image = image.tensors
+        image_rgb = v2.functional.to_dtype(raw_image, dtype=torch.float32, scale=True)
+        image_rgb = v2.functional.normalize(
+            image_rgb,
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225],
+        )
+
+        if self.gmflow is None:
+            detr_tensors = image_rgb
+        else:
+            if self.prev_image is None:
+                flow_rgb = raw_image.new_zeros(raw_image.shape)
+            else:
+                if self.prev_image.shape[-2:] != raw_image.shape[-2:]:
+                    raise ValueError(
+                        f"Current frame shape {tuple(raw_image.shape[-2:])} does not match "
+                        f"previous frame shape {tuple(self.prev_image.shape[-2:])}."
+                    )
+                flow_out = self.gmflow(
+                    self.prev_image.float(),
+                    raw_image.float(),
+                    attn_splits_list=[2],
+                    corr_radius_list=[-1],
+                    prop_radius_list=[-1],
+                )
+                flow_rgb = flow_to_image(flow_out["flow_preds"][-1])
+
+            flow_rgb = v2.functional.to_dtype(flow_rgb, dtype=torch.float32, scale=True)
+            flow_rgb = v2.functional.normalize(
+                flow_rgb,
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225],
+            )
+            detr_tensors = torch.cat([image_rgb, flow_rgb], dim=1)
+
+        detr_tensors = detr_tensors * (~image.mask[:, None, ...]).to(torch.float32)
+        if self.dtype != torch.float32:
+            detr_tensors = detr_tensors.to(self.dtype)
+
+        self.prev_image = raw_image.clone()
+
+        return NestedTensor(
+            tensors=detr_tensors.contiguous(),
+            mask=image.mask,
+        )
 
     def get_track_results(self):
         return self.current_track_results

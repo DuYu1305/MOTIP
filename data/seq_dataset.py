@@ -28,8 +28,6 @@ class SeqDataset(Dataset):
         self.transform = v2.Compose([
             v2.Resize(size=self.max_shorter, max_size=self.max_longer),
             v2.ToImage(),
-            v2.ToDtype(torch.float32, scale=True),
-            v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
         return
 
@@ -39,8 +37,6 @@ class SeqDataset(Dataset):
     def __getitem__(self, item):
         image = self._load(self.image_paths[item])
         transformed_image = self.transform(image)
-        if self.dtype != torch.float32:
-            transformed_image = transformed_image.to(self.dtype)
         transformed_image = nested_tensor_from_tensor_list([transformed_image], self.size_divisibility)
         return transformed_image, self.image_paths[item]
 

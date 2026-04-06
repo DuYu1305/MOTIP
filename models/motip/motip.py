@@ -20,6 +20,12 @@ class MOTIP(nn.Module):
         self.trajectory_modeling = trajectory_modeling
         self.id_decoder = id_decoder
 
+        self.flow_rgb_adapter = nn.Conv2d(6, 3, kernel_size=1, bias=False)
+        with torch.no_grad():
+            self.flow_rgb_adapter.weight.zero_()
+            for c in range(3):
+                self.flow_rgb_adapter.weight[c, c, 0, 0] = 1.0
+
         if self.id_decoder is not None:
             self.num_id_vocabulary = self.id_decoder.num_id_vocabulary
         else:
@@ -32,6 +38,9 @@ class MOTIP(nn.Module):
         match kwargs["part"]:
             case "detr":
                 frames = kwargs["frames"]
+                if frames.tensors.shape[1] == 6:
+                    frames = frames.clone()
+                    frames.tensors = self.flow_rgb_adapter(frames.tensors)
                 if "use_checkpoint" in kwargs:
                     return checkpoint(
                         self.detr, frames,

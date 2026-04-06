@@ -19,6 +19,7 @@ from models.runtime_tracker import RuntimeTracker
 from log.log import Metrics
 from models.motip import build as build_motip
 from models.misc import load_checkpoint
+from gmflow.gmflow import GMFlow
 
 
 def submit_and_evaluate(config: dict):
@@ -143,6 +144,15 @@ def submit_and_evaluate_one_model(
         split=data_split,
         load_annotation=False,
     )
+
+    gmflow = GMFlow()
+    checkpoint = torch.load("./gmflow/gmflow_things-e9887eda.pth", map_location="cpu")
+    weights = checkpoint["model"] if isinstance(checkpoint, dict) and "model" in checkpoint else checkpoint
+    gmflow.load_state_dict(weights)
+    gmflow.eval()
+    gmflow.requires_grad_(False)
+    gmflow.to(accelerator.device)
+
     # Set the dtype during inference:
     match dtype:
         case "FP32": dtype=torch.float32
@@ -206,6 +216,7 @@ def submit_and_evaluate_one_model(
             area_thresh=area_thresh,
             only_detr=inference_only_detr,
             dtype=dtype,
+            gmflow=gmflow,
         )
         if is_fake:
             logger.info(
